@@ -1,0 +1,27 @@
+[
+  {
+    "name": "WinnablesPrizeManager",
+    "network": "ethereumSepolia",
+    "address": "0xAd35711F62Ff085cF2686f26DC3d1A59c6AF9521"
+  },
+  {
+    "name": "WinnablesTicket",
+    "network": "avalancheFuji",
+    "address": "0x87050Db5FA239aD70D8CFc82ec91B079f1b3A261"
+  },
+  {
+    "name": "WinnablesTicketManager",
+    "network": "avalancheFuji",
+    "address": "0x4C538ffeafb4ff1e85a7A4299217E81d20cA496C"
+  },
+  {
+    "name": "DemoNFT",
+    "network": "ethereumSepolia",
+    "address": "0xF56b819ad0Cd39967100987ce2d5471F8cd77573"
+  },
+  {
+    "name": "DemoToken",
+    "network": "ethereumSepolia",
+    "address": "0x9CC501f67897D7cEA21c4275ece82ceF0f08Cd8f"
+  }
+]
