@@ -15,7 +15,7 @@ ___
 ### Q: If you are integrating tokens, are you allowing only whitelisted tokens to work with the codebase or any complying with the standard? Are they assumed to have certain properties, e.g. be non-reentrant? Are there any types of [weird tokens](https://github.com/d-xo/weird-erc20) you want to integrate?
 We are supposed to support all 100% valid ERC20 tokens + USDC and USDT.
 
-For tokens that have a blacklist, we will ignore any issues caused by that blacklist
+For tokens that have a blacklist, we will ignore any issues caused by that blacklist unless they cause damage to the protocol or other users.
 ___
 
 ### Q: Are there any limitations on values set by admins (or other roles) in the codebase, including restrictions on array lengths?
