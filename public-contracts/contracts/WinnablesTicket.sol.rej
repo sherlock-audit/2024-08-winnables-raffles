@@ -1,0 +1,116 @@
+diff a/public-contracts/contracts/WinnablesTicket.sol b/public-contracts/contracts/WinnablesTicket.sol	(rejected hunks)
+@@ -13,13 +13,16 @@ import "./Roles.sol";
+ 
+ /// @title Winnables Ticket
+ /// @notice non transferable ERC1155 Tickets
+-contract WinnablesTicket is Roles, IWinnablesTicket {
++contract WinnablesTicket is IWinnablesTicket {
+   using Address for address;
+   using Strings for uint256;
+ 
+   /// @dev owner of the ERC1155 collection (for Admin rights on marketplace websites and metadata update)
+   address public owner;
+ 
++  /// @dev TicketManager
++  address public manager;
++
+   /// @dev Mapping from Raffle ID to mapping from address to balance (tickets owned by this address for this Raffle)
+   mapping(uint256 => mapping(address => uint256)) private _balances;
+ 
+@@ -33,9 +36,17 @@ contract WinnablesTicket is Roles, IWinnablesTicket {
+   /// @dev baseURI for tokens
+   string private _uri;
+ 
++  /// @dev thrown when the caller is not the ticket manager
++  error NotTicketManager();
++
++  /// @dev thrown when the origin is not the owner
++  error NotOwnerOrigin();
++
++  /// @dev thrown when trying to initialize the ticket manager a second time
++  error AlreadyInitialized();
++
+   /// @dev Contract constructor
+   constructor() {
+-    _setRole(msg.sender, 0, true);
+     owner = msg.sender;
+   }
+ 
+@@ -163,9 +174,21 @@ contract WinnablesTicket is Roles, IWinnablesTicket {
+   // -- Admin functions
+   // =============================================================
+ 
++  /// @notice (Owner origin) Initialize ticket manager
++  function initializeManager() external {
++    if (manager != address(0)) {
++      revert AlreadyInitialized();
++    }
++    if (tx.origin != owner) {
++      revert NotOwnerOrigin();
++    }
++    manager = msg.sender;
++  }
++
+   /// @notice (Owner) Update Token URI
+-  function setURI(string memory newuri) external onlyOwner {
+-    _uri = newuri;
++  /// @param newUri New token URI
++  function setURI(string memory newUri) external onlyOwner {
++    _uri = newUri;
+   }
+ 
+   /// @notice (Owner) Transfer contract ownership (only for Marketplace admin rights)
+@@ -179,11 +202,10 @@ contract WinnablesTicket is Roles, IWinnablesTicket {
+   /// @param to Mint to
+   /// @param id Raffle ID for which the tickets are minted
+   /// @param amount Number of tickets to mint
+-  function mint(address to, uint256 id, uint256 amount) external onlyRole(1) {
+-    if (to == address(0)) {
+-      revert TransferToAddressZero();
++  function mint(address to, uint256 id, uint256 amount) external {
++    if (msg.sender != manager) {
++      revert NotTicketManager();
+     }
+-    address operator = msg.sender;
+     uint256 startId = _supplies[id];
+ 
+     unchecked {
+@@ -193,9 +215,7 @@ contract WinnablesTicket is Roles, IWinnablesTicket {
+ 
+     _ticketOwnership[id][startId] = to;
+     emit NewTicket(id, startId, amount);
+-    emit TransferSingle(operator, address(0), to, id, amount);
+-
+-    _doSafeTransferAcceptanceCheck(operator, address(0), to, id, amount);
++    emit TransferSingle(msg.sender, address(0), to, id, amount);
+   }
+ 
+   /// @notice Batch mint Raffle tickets is not implemented
+@@ -209,27 +229,4 @@ contract WinnablesTicket is Roles, IWinnablesTicket {
+   ) external {
+     revert NotImplemented();
+   }
+-
+-  // =============================================================
+-  // -- Internal functions
+-  // =============================================================
+-
+-  /// @dev If the recipient of a ticket is a contract, check that it is a valid receiver
+-  function _doSafeTransferAcceptanceCheck(
+-    address operator,
+-    address from,
+-    address to,
+-    uint256 id,
+-    uint256 amount
+-  ) private {
+-    if (to.isContract()) {
+-      try IERC1155Receiver(to).onERC1155Received(operator, from, id, amount, "") returns (bytes4 response) {
+-        if (response != IERC1155Receiver.onERC1155Received.selector) {
+-          revert TransferRejected();
+-        }
+-      } catch {
+-        revert TransferRejected();
+-      }
+-    }
+-  }
+ }

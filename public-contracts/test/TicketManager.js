@@ -1015,7 +1015,7 @@ describe('CCIP Ticket Manager', () => {
             buyer.address,
             0,
             1,
-            100,
+            25,
             currentBlock + 10,
             100
           ])
