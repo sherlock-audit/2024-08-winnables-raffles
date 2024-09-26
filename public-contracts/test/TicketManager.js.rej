@@ -435,6 +435,15 @@ diff a/public-contracts/test/TicketManager.js b/public-contracts/test/TicketMana
          const buyer = await getWalletWithEthers();
          const currentBlock = await ethers.provider.getBlockNumber();
          const sig = await api.signMessage(ethers.utils.arrayify(
+@@ -619,7 +673,7 @@ describe('CCIP Ticket Manager', () => {
+             buyer.address,
+             0,
+             1,
+-            100,
++            25,
+             currentBlock + 10,
+             100
+           ])
 @@ -634,7 +688,7 @@ describe('CCIP Ticket Manager', () => {
              0
            ])
