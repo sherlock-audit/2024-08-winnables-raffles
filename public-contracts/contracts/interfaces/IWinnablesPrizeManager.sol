@@ -8,6 +8,9 @@ interface IWinnablesPrizeManager is IWinnables {
     error AlreadyClaimed();
     error NFTLocked();
     error IllegalRaffleId();
+    error UnauthorizedToClaim();
+    error InvalidAddress();
+    error LINKTokenNotPermitted();
 
     event NFTPrizeLocked(uint256 indexed raffleId, address indexed contractAddress, uint256 indexed tokenId);
     event TokenPrizeLocked(uint256 indexed raffleId, address indexed contractAddress, uint256 indexed amount);
@@ -31,6 +34,7 @@ interface IWinnablesPrizeManager is IWinnables {
     struct RafflePrize {
         RaffleType raffleType;
         RafflePrizeStatus status;
+        bytes32 ccipCounterpart;
         address winner;
     }
 
