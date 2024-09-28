@@ -89,3 +89,6 @@ For the first prompt, type "1", then for the second, leave empty.
 
 
 
+
+
+https://docs.chain.link/vrf/v2-5/subscription/create-manage

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.24;
 
-import "@chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol";
+import "@chainlink/contracts/src/v0.8/shared/interfaces/LinkTokenInterface.sol";
 import "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
 import "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
 
@@ -11,6 +11,18 @@ import "./BaseLinkConsumer.sol";
 abstract contract BaseCCIPSender is BaseCCIPContract, BaseLinkConsumer {
     error MissingCCIPParams();
     error InsufficientLinkBalance(uint256 balance, uint256 required);
+
+    /// @dev extraArgs for ccip message
+    bytes private _ccipExtraArgs;
+
+    function _sendCCIPMessage(
+        bytes32 packedCcipCounterpart,
+        bytes memory data
+    ) internal returns(bytes32) {
+        address ccipDestAddress = address(uint160(uint256(packedCcipCounterpart)));
+        uint64 chainSelector = uint64(uint256(packedCcipCounterpart) >> 160);
+        return _sendCCIPMessage(ccipDestAddress, chainSelector, data);
+    }
 
     function _sendCCIPMessage(
         address ccipDestAddress,
@@ -29,7 +41,7 @@ abstract contract BaseCCIPSender is BaseCCIPContract, BaseLinkConsumer {
             receiver: abi.encode(ccipDestAddress),
             data: data,
             tokenAmounts: new Client.EVMTokenAmount[](0),
-            extraArgs: "",
+            extraArgs: _ccipExtraArgs,
             feeToken: LINK_TOKEN
         });
 
@@ -47,5 +59,9 @@ abstract contract BaseCCIPSender is BaseCCIPContract, BaseLinkConsumer {
             ccipDestChainSelector,
             message
         );
+    }
+
+    function _setCCIPExtraArgs(bytes calldata extraArgs) internal {
+        _ccipExtraArgs = extraArgs;
     }
 }

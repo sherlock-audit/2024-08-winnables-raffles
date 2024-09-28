@@ -17,9 +17,6 @@ module.exports = {
           evmVersion: 'shanghai',
         }
       },
-      { version: '0.4.24' },
-      { version: '0.4.17' },
-      { version: '0.6.6' },
     ],
   },
   networks: {

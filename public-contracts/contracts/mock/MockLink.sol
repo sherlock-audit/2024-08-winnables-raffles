@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.4.24;
+pragma solidity 0.8.24;
 
-import "@chainlink/contracts/src/v0.4/LinkToken.sol";
+import "@chainlink/contracts/src/v0.8/shared/token/ERC677/LinkToken.sol";
 
 contract MockLink is LinkToken {
-  function mint(address to, uint256 amount) external {
-    balances[to] += amount;
+  constructor() {
+    grantMintRole(msg.sender);
   }
 }
