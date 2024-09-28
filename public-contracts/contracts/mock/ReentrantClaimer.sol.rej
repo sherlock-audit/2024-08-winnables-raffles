@@ -1,0 +1,17 @@
+diff a/public-contracts/contracts/mock/ReentrantClaimer.sol b/public-contracts/contracts/mock/ReentrantClaimer.sol	(rejected hunks)
+@@ -16,7 +16,7 @@ contract ReentrantClaimer {
+         IPrizeManager(prizeManager).claimPrize(raffleId);
+     }
+ 
+-    fallback() external payable {
++    receive() external payable {
+         if (_done) {
+             _done = false;
+             _raffleId = 0;
+@@ -26,6 +26,4 @@ contract ReentrantClaimer {
+         _done = true;
+         IPrizeManager(_prizeManager).claimPrize(_raffleId);
+     }
+-
+-    receive() external payable {}
+ }

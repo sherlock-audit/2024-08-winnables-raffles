@@ -1,0 +1,13 @@
+diff a/public-contracts/scripts/getBlock.js b/public-contracts/scripts/getBlock.js	(rejected hunks)
+@@ -1,9 +1,9 @@
+-const { ethers } = require('hardhat');
++const { ethers, network } = require('hardhat');
+ 
+ async function main() {
+   const block = await ethers.provider.getBlock('latest');
+ 
+-  console.log(block);
++  console.log(network.name, block);
+ }
+ 
+ main().catch(e => {

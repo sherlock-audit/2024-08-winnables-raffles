@@ -1,0 +1,48 @@
+diff a/public-contracts/package.json b/public-contracts/package.json	(rejected hunks)
+@@ -27,41 +27,22 @@
+     "typescript": ">=4.5.0"
+   },
+   "dependencies": {
+-    "@chainlink/contracts": "^0.6.1",
++    "@chainlink/contracts": "^1.2.0",
+     "@chainlink/contracts-ccip": "^1.2.1",
+     "@openzeppelin/contracts": "^4.8.3",
+     "hardhat-contract-sizer": "^2.10.0"
+   },
+   "scripts": {
+-    "start": "concurrently 'hardhat node --hostname 0.0.0.0' 'hardhat --network localhost run scripts/demo/start.js'",
+-    "ccip:start": "hardhat run scripts/ccip/start.js",
+-    "deploy": "hardhat --network sepolia run scripts/deploy.js",
++    "start": "hardhat run scripts/ccip/start.js",
+     "build": "hardhat compile",
+     "test": "hardhat test --bail",
++    "coverage": "hardhat coverage",
+     "gas": "REPORT_GAS=true hardhat test",
+     "size": "hardhat size-contracts",
+-    "fund": "hardhat --network localhost run scripts/demo/fund.js",
+-    "mine:start": "hardhat --network localhost run scripts/demo/mine.js",
+-    "mine:stop": "hardhat --network localhost run scripts/demo/stop-mine.js",
+-    "raffle": "hardhat --network localhost run scripts/demo/createRaffle.js",
++    "deployments": "hardhat run scripts/deployment.js",
+     "getRaffle": "hardhat --network localhost run scripts/getRaffle.js",
+-    "ticket": "hardhat --network localhost run scripts/demo/buyTickets.js",
+     "role": "hardhat --network localhost run scripts/grantRole.js",
+-    "draw": "hardhat --network localhost run scripts/demo/drawWinner.js",
+-    "supply": "hardhat --network localhost run scripts/demo/checkSupply.js",
+     "getRoles": "hardhat --network localhost run scripts/getRoles.js",
+-    "getWinner": "hardhat --network localhost run scripts/getWinner.js",
+-    "claim": "hardhat --network localhost run scripts/demo/claimPrize.js",
+-    "ff": "hardhat --network localhost run scripts/demo/fast-forward.js",
+-    "staging:raffle": "NODE_ENV=staging hardhat --network sepolia run scripts/demo/createRaffle.js",
+-    "staging:getRaffle": "NODE_ENV=staging hardhat --network sepolia run scripts/getRaffle.js",
+-    "staging:ticket": "NODE_ENV=staging hardhat --network sepolia run scripts/demo/buyTickets.js",
+-    "staging:role": "NODE_ENV=staging hardhat --network sepolia run scripts/grantRole.js",
+-    "staging:draw": "NODE_ENV=staging hardhat --network sepolia run scripts/demo/drawWinner.js",
+-    "staging:supply": "NODE_ENV=staging hardhat --network sepolia run scripts/demo/checkSupply.js",
+-    "staging:getRoles": "NODE_ENV=staging hardhat --network sepolia run scripts/getRoles.js",
+-    "staging:getWinner": "NODE_ENV=staging hardhat --network sepolia run scripts/getWinner.js",
+-    "staging:claim": "NODE_ENV=staging hardhat --network sepolia run scripts/demo/claimPrize.js",
+-    "env": "hardhat run scripts/printEnv.js"
++    "getWinner": "hardhat --network localhost run scripts/getWinner.js"
+   }
+ }

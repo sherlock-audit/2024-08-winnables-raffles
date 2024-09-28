@@ -1,0 +1,20 @@
+diff a/public-contracts/.solcover.js b/public-contracts/.solcover.js	(rejected hunks)
+@@ -1,6 +1,9 @@
+ module.exports = {
+   skipFiles: [
+     'mock/DemoNFT.sol',
++    'mock/ERC1155BadReceiver.sol',
++    'mock/ERC1155Receiver.sol',
++    'mock/MockBadLink.sol',
+     'mock/MockCCIPRouter.sol',
+     'mock/MockLink.sol',
+     'mock/MockNFT.sol',
+@@ -9,7 +12,6 @@ module.exports = {
+     'mock/ReentrantBuyer.sol',
+     'mock/ReentrantClaimer.sol',
+     'mock/TetherToken.sol',
+-    'mock/VRFCoordinatorV2BetterMock.sol',
+-    'mock/VRFV2Wrapper.sol',
++    'mock/VRFCoordinatorV2_5BetterMock.sol',
+   ]
+ }

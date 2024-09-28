@@ -1,0 +1,21 @@
+diff a/public-contracts/scripts/getSupply.js b/public-contracts/scripts/getSupply.js	(rejected hunks)
+@@ -1,10 +1,15 @@
+-const { attachAll } = require('../utils/demo');
++const { ethers, network } = require('hardhat');
++const latestDeployments = require('../deployments/latest.json');
+ const ask = require('../utils/ask');
+ 
+ async function main() {
+-  const {
+-    ticket,
+-  } = await attachAll();
++  const contract = latestDeployments.find(d => d.network === network.name && d.name === 'WinnablesTicket');
++  if (!contract) {
++    throw new Error(`No ticket contract found on this chain: ${network.name}`)
++  }
++  const factory = await ethers.getContractFactory('WinnablesTicket');
++  const ticket = factory.attach(contract.address);
++
+   const raffleId = parseInt(await ask('Raffle ID: '));
+   if (isNaN(raffleId)) {
+     throw new Error('Invalid input');

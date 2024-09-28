@@ -1,0 +1,30 @@
+diff a/public-contracts/test/common/chainlink.js b/public-contracts/test/common/chainlink.js	(rejected hunks)
+@@ -1,18 +1,10 @@
+ const { BigNumber } = require('ethers');
+ const { randomBytes } = require('crypto');
+ 
+-const pointOneLink = BigNumber.from('100000000000000000') // 0.1
+ const oneHundredLink = BigNumber.from('100000000000000000000') // 100
+-const oneGwei = BigNumber.from('1000000000');
+ 
+ function formatBytes(bn, bytes) {
+-  const raw = bn.toHexString()
+-    .replace(/^0x/, '');
+-  const rawLength = raw.length / 2;
+-  if (rawLength > bytes) {
+-    throw new Error('Cannot truncate bytes');
+-  }
+-  return `0x${'0'.repeat((bytes - rawLength) * 2)}${raw}`;
++  return '0x' + bn.toHexString().slice(-1 * bytes * 2).padStart(bytes * 2, '0');
+ }
+ 
+ function randomWord() {
+@@ -23,8 +15,6 @@ function randomWord() {
+ }
+ 
+ module.exports = {
+-  pointOneLink,
+-  oneGwei,
+   oneHundredLink,
+   formatBytes,
+   randomWord

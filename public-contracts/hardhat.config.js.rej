@@ -1,0 +1,11 @@
+diff a/public-contracts/hardhat.config.js b/public-contracts/hardhat.config.js	(rejected hunks)
+@@ -17,9 +17,6 @@ module.exports = {
+           evmVersion: 'shanghai',
+         }
+       },
+-      { version: '0.4.24' },
+-      { version: '0.4.17' },
+-      { version: '0.6.6' },
+     ],
+   },
+   networks: {
