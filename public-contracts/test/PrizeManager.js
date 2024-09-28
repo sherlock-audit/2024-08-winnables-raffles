@@ -3440,6 +3440,52 @@ describe('CCIP Prize Manager', () => {
     });
   });
 
+  describe('Attempts to cancel the raffle and withdraw the USDT', () => {
+    before(async () => {
+      snapshot = await helpers.takeSnapshot();
+    });
+    after(async () => {
+      await snapshot.restore();
+    });
+
+    it('Can\'t withdraw the prize', async () => {
+      await expect(manager.withdrawToken(usdt.address, 100))
+        .to.be.revertedWithCustomError(manager, 'InsufficientBalance');
+    });
+
+    it('Can unlock the tokens with a cancel message', async () => {
+      const tx = await whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
+        manager.connect(signer).ccipReceive({
+          messageId: ethers.constants.HashZero,
+          sourceChainSelector: 1,
+          sender: '0x' + counterpartContractAddress.slice(-40).padStart(64, '0'),
+          data: '0x000000000000000000000000000000000000000000000000000000000000000004',
+          destTokenAmounts: []
+        })
+      );
+      const { events } = await tx.wait();
+      expect(events).to.have.lengthOf(1);
+      expect(events[0].event).to.eq('PrizeUnlocked');
+    });
+
+    it('Can not withdraw the tokens with withdrawNFT', async () => {
+      await expect(manager.withdrawNFT(usdt.address, 1))
+        .to.be.revertedWithCustomError(manager, 'NotAnNFT');
+    });
+
+    it('Can withdraw the Tokens now', async () => {
+      const tx = await manager.withdrawToken(usdt.address, 100);
+      const { events } = await tx.wait();
+      expect(events).to.have.lengthOf(1);
+      const transferEvent = usdt.interface.parseLog(events[0]);
+      expect(transferEvent.name).to.eq('Transfer');
+      const { from, to, value } = transferEvent.args;
+      expect(from).to.eq(manager.address);
+      expect(to).to.eq(winnablesDeployer.address);
+      expect(value).to.eq(100);
+    });
+  });
+
   describe('Attempts to draw the raffle and claim the NFT as the winner', () => {
     before(async () => {
       snapshot = await helpers.takeSnapshot();
@@ -3628,6 +3674,56 @@ describe('CCIP Prize Manager', () => {
       expect(raffleId).to.eq(3);
       expect(winner).to.eq(winnablesDeployer.address);
       const prize = await manager.getRaffle(3);
+      expect(prize.raffleType).to.eq(3);
+      expect(prize.status).to.eq(1);
+      expect(prize.winner).to.eq(winnablesDeployer.address);
+    });
+  });
+
+  describe('Attempts to draw the raffle and claim the USDT as the winner', () => {
+    before(async () => {
+      snapshot = await helpers.takeSnapshot();
+    });
+    after(async () => {
+      await snapshot.restore();
+    });
+    it('Can\'t claim the prize', async () => {
+      await expect(manager.claimPrize(4)).to.be.revertedWithCustomError(manager, 'UnauthorizedToClaim');
+    });
+
+    it('Can unlock the prize with a WinnerDrawn message', async () => {
+      const tx = await whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
+        manager.connect(signer).ccipReceive({
+          messageId: ethers.constants.HashZero,
+          sourceChainSelector: 1,
+          sender: '0x' + counterpartContractAddress.slice(-40).padStart(64, '0'),
+          data: '0x' +
+            '01' +
+            '0000000000000000000000000000000000000000000000000000000000000004' +
+            winnablesDeployer.address.slice(-40).toLowerCase(),
+          destTokenAmounts: []
+        })
+      );
+      const { events } = await tx.wait();
+      expect(events).to.have.lengthOf(1);
+      expect(events[0].event).to.eq('WinnerPropagated');
+    });
+
+    it('Can claim the USDT now', async () => {
+      const tx = await manager.claimPrize(4);
+      const { events } = await tx.wait();
+      expect(events).to.have.lengthOf(2);
+      const transferEvent = usdt.interface.parseLog(events[0]);
+      expect(transferEvent.name).to.eq('Transfer');
+      const { from, to, value } = transferEvent.args;
+      expect(from).to.eq(manager.address);
+      expect(to).to.eq(winnablesDeployer.address);
+      expect(value).to.eq(100);
+      expect(events[1].event).to.eq('PrizeClaimed');
+      const { raffleId, winner } = events[1].args;
+      expect(raffleId).to.eq(4);
+      expect(winner).to.eq(winnablesDeployer.address);
+      const prize = await manager.getRaffle(4);
       expect(prize.raffleType).to.eq(3);
       expect(prize.status).to.eq(1);
       expect(prize.winner).to.eq(winnablesDeployer.address);
