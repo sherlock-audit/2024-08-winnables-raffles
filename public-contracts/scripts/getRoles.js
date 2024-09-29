@@ -1,12 +1,18 @@
-const { ethers } = require('hardhat');
+const { ethers, network } = require('hardhat');
+const latestDeployments = require('../deployments/latest.json');
 const ask = require('../utils/ask');
 
 async function main() {
-  const contractAddress = ethers.utils.getAddress(await ask('Contract Address: '));
+  const contract = latestDeployments.find(
+    d => d.network === network.name && d.name.endsWith('Manager')
+  ).address;
+  if (!contract) {
+    throw new Error(`No ticket contract found on this chain: ${network.name}`)
+  }
   const address = ethers.utils.getAddress(await ask('Address: '));
 
   const RolesFactory = await ethers.getContractFactory('Roles');
-  const rolesContract = RolesFactory.attach(contractAddress);
+  const rolesContract = RolesFactory.attach(contract.address);
 
   const rolesByte32 = await rolesContract.getRoles(address);
   const rolesNumeric = BigInt(rolesByte32);

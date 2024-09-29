@@ -1,0 +1,9 @@
+diff a/public-contracts/README.md b/public-contracts/README.md	(rejected hunks)
+@@ -89,3 +89,7 @@ For the first prompt, type "1", then for the second, leave empty.
+ 
+ 
+ 
++
++
++https://docs.chain.link/vrf/v2-5/subscription/create-manage
++

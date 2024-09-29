@@ -1,7 +1,7 @@
 const ask = require('../utils/ask');
-const {ethers, network} = require("hardhat");
+const { ethers, network } = require("hardhat");
 const latestDeployments = require('../deployments/latest.json');
-const {BigNumber} = require('ethers');
+const { BigNumber } = require('ethers');
 
 async function main() {
   const contractAddress = latestDeployments.find(d => d.network === network.name && d.name.endsWith('Manager')).address;

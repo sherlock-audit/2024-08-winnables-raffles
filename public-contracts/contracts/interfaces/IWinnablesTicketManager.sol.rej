@@ -1,0 +1,16 @@
+diff a/public-contracts/contracts/interfaces/IWinnablesTicketManager.sol b/public-contracts/contracts/interfaces/IWinnablesTicketManager.sol	(rejected hunks)
+@@ -5,11 +5,13 @@ import "./IWinnables.sol";
+ 
+ interface IWinnablesTicketManager is IWinnables {
+     error PrizeNotLocked();
+-    error DuplicateRaffleID();
+     error InvalidRaffleStatus();
+     error InvalidTicketCount();
++    error RaffleWontDraw();
++    error MaxTicketExceed();
+ 
+     event RafflePrizeLocked(bytes32 messageId, uint64 sourceChainSelector, uint256 raffleId);
++    event InvalidVRFRequest(uint256 requestId);
+ 
+     enum CCIPMessageType {
+         RAFFLE_CANCELED,

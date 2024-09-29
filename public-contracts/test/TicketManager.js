@@ -12,24 +12,31 @@ const { BigNumber } = require('ethers');
 
 ethers.utils.Logger.setLogLevel(ethers.utils.Logger.levels.ERROR);
 
+
+const RaffleStatus = {
+  NONE: 0,
+  PRIZE_LOCKED: 1,
+  IDLE: 2,
+  REQUESTED: 3,
+  FULFILLED: 4,
+  PROPAGATED: 5,
+  CLAIMED: 6,
+  CANCELED: 7,
+};
 describe('CCIP Ticket Manager', () => {
   let ccipRouter;
   let link;
   let signers;
   let manager;
   let tickets;
-  let approver;
-  let winnablesDeployer;
-  let nft;
-  let token;
   let api;
   let snapshot;
   let counterpartContractAddress;
   let coordinator;
-  let badReceiver;
-  let goodReceiver;
 
   before(async () => {
+    // Start the tests at block 100_000
+    await helpers.mine(100_000);
     signers = await ethers.getSigners();
     const result = await ccipDeployTicketManager();
     approver = result.approver;
@@ -48,6 +55,7 @@ describe('CCIP Ticket Manager', () => {
     const goodReceiverFactory = await ethers.getContractFactory('ERC1155Receiver');
     badReceiver = await badReceiverFactory.deploy();
     goodReceiver = await goodReceiverFactory.deploy();
+    await (await manager.setCCIPCounterpart(counterpartContractAddress, 1, true)).wait();
   });
 
   it('Initializes correctly', async () => {
@@ -56,6 +64,7 @@ describe('CCIP Ticket Manager', () => {
     expect(await manager.supportsInterface("0x01ffc9a7")).to.eq(true);
     expect(await manager.supportsInterface("0x01ffc9a6")).to.eq(false);
     expect(await manager.getLinkToken()).to.eq(link.address);
+    expect(await tickets.manager()).to.eq(manager.address);
     const roles = await manager.getRoles(signers[0].address);
     expect(BigNumber.from(roles)).to.eq(0b11);
     const walletA = await getWalletWithEthers();
@@ -67,14 +76,36 @@ describe('CCIP Ticket Manager', () => {
       manager,
       'MissingRole'
     );
+    await expect(manager.drawWinner(1)).to.be.revertedWithCustomError(
+      manager,
+      'InvalidRaffle'
+    );
+    await expect(manager.cancelRaffle(1)).to.be.revertedWithCustomError(
+      manager,
+      'InvalidRaffle'
+    );
   });
 
   it('Cannot mint tickets', async () => {
     await expect(tickets.mint(signers[0].address, 1, 1)).to.be.revertedWithCustomError(
       tickets,
-      'MissingRole',
+      'NotTicketManager',
     );
   });
+
+  it('Should not be able to set CCIP Extra Args as non-admin', async () => {
+    const randomUser = signers[10];
+
+    await expect(manager.connect(randomUser).setCCIPExtraArgs("0xff00")).to.be.revertedWithCustomError(
+      manager,
+      'MissingRole'
+    );
+  });
+
+  it('Should be able to set CCIP Extra Args as admin', async () => {
+    await manager.setCCIPExtraArgs("0x00ff");
+  });
+
 
   it('Should not be able to create a raffle before the prize is locked', async () => {
     const now = await blockTime();
@@ -100,19 +131,6 @@ describe('CCIP Ticket Manager', () => {
     await expect(tx).to.be.revertedWithCustomError(manager, 'InvalidRouter');
   });
 
-  it('Should not accept prize locked notification from unauthorized source', async () => {
-    const tx = whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
-      manager.connect(signer).ccipReceive({
-        messageId: ethers.constants.HashZero,
-        sourceChainSelector: 1,
-        sender: '0x' + counterpartContractAddress.slice(-40).padStart(64, '0'),
-        data: '0x000000000000000000000000000000000000000000000000000000000000000001',
-        destTokenAmounts: []
-      })
-    );
-    await expect(tx).to.be.revertedWithCustomError(manager, 'UnauthorizedCCIPSender');
-  });
-
   it('Should not be able to set CCIP Counterpart if not admin', async () => {
     await expect(manager.connect(signers[2]).setCCIPCounterpart(
       counterpartContractAddress,
@@ -124,8 +142,33 @@ describe('CCIP Ticket Manager', () => {
     )
   });
 
+  it('Should not accept prize locked notification from unauthorized contract', async () => {
+    const tx = whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
+      manager.connect(signer).ccipReceive({
+        messageId: ethers.constants.HashZero,
+        sourceChainSelector: 1,
+        sender: '0x' + signers[2].address.slice(-40).padStart(64, '0'),
+        data: '0x000000000000000000000000000000000000000000000000000000000000000001',
+        destTokenAmounts: []
+      })
+    );
+    await expect(tx).to.be.revertedWithCustomError(manager, 'UnauthorizedCCIPSender');
+  });
+
+  it('Should not accept prize locked notification from unauthorized chain', async () => {
+    const tx = whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
+      manager.connect(signer).ccipReceive({
+        messageId: ethers.constants.HashZero,
+        sourceChainSelector: 2,
+        sender: '0x' + counterpartContractAddress.slice(-40).padStart(64, '0'),
+        data: '0x000000000000000000000000000000000000000000000000000000000000000001',
+        destTokenAmounts: []
+      })
+    );
+    await expect(tx).to.be.revertedWithCustomError(manager, 'UnauthorizedCCIPSender');
+  });
+
   it('Should notify when the prize is locked', async () => {
-    await (await manager.setCCIPCounterpart(counterpartContractAddress, 1, true)).wait();
     const tx = await whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
       manager.connect(signer).ccipReceive({
         messageId: ethers.constants.HashZero,
@@ -143,6 +186,8 @@ describe('CCIP Ticket Manager', () => {
   });
 
   describe('Cancellation with zero participant', () => {
+    let start;
+    let end;
     before(async () => {
       snapshot = await helpers.takeSnapshot();
     });
@@ -179,6 +224,20 @@ describe('CCIP Ticket Manager', () => {
       await expect(tx).to.be.revertedWithCustomError(manager, 'RaffleRequiresTicketSupplyCap');
     });
 
+    it('Cannot create a raffle with minTickets > maxTickets', async () => {
+      const now = await blockTime();
+      const tx = manager.createRaffle(
+        1,
+        now,
+        now + timeSeconds.hour,
+        501,
+        500,
+        100
+      );
+
+      await expect(tx).to.be.revertedWithCustomError(manager, 'RaffleWontDraw');
+    });
+
     it('Cannot create a raffle without max holdings', async () => {
       const now = await blockTime();
       const tx = manager.createRaffle(
@@ -208,11 +267,12 @@ describe('CCIP Ticket Manager', () => {
     });
 
     it('Create Raffle with 0 ticket min', async () => {
-      const now = await blockTime();
+      start = await blockTime();
+      end = start + timeSeconds.hour;
       const tx = await manager.createRaffle(
         1,
-        now,
-        now + timeSeconds.hour,
+        start,
+        end,
         0,
         500,
         100
@@ -226,16 +286,27 @@ describe('CCIP Ticket Manager', () => {
 
     it('Should not be able to cancel if the raffle is still open', async () => {
       await expect(
-        manager.cancelRaffle(counterpartContractAddress, 1, 1)
+        manager.cancelRaffle(1)
       ).to.be.revertedWithCustomError(manager, 'RaffleIsStillOpen');
     });
 
     it('Waits 1h', async () => {
-      await helpers.time.increase(timeSeconds.hour);
-    })
+      await helpers.time.setNextBlockTimestamp(end);
+    });
+
+    it('Should not be able to cancel raffle at the exact timestamp of its end time', async () => {
+      await expect(manager.cancelRaffle(1)).to.be.revertedWithCustomError(
+        manager,
+        'RaffleIsStillOpen'
+      );
+    });
+
+    it('Waits 1 more second', async () => {
+      await helpers.time.increase(1);
+    });
 
     it('Should not be able to cancel with insufficient LINK balance', async () => {
-      await expect(manager.cancelRaffle(counterpartContractAddress, 1, 1)).to.be.revertedWithCustomError(
+      await expect(manager.cancelRaffle(1)).to.be.revertedWithCustomError(
         manager,
         'InsufficientLinkBalance'
       );
@@ -271,11 +342,15 @@ describe('CCIP Ticket Manager', () => {
 
     it('Cancels and sends cancellation CCIP Message', async () => {
       expect(await manager.shouldCancelRaffle(1)).to.eq(true);
-      const tx = await manager.cancelRaffle(counterpartContractAddress, 1, 1);
+      const tx = await manager.cancelRaffle(1);
       const { events } = await tx.wait();
       expect(events).to.have.lengthOf(3);
       const ccipMessageEvent = ccipRouter.interface.parseLog(events[0]);
       expect(ccipMessageEvent.name).to.eq('MockCCIPMessageEvent');
+      expect(ccipMessageEvent.args.chain).to.eq(1);
+      expect(ethers.utils.getAddress(
+        '0x' + ccipMessageEvent.args.receiver.slice(-40)
+      )).to.eq(counterpartContractAddress);
       expect(ccipMessageEvent.args.data).to.eq('0x000000000000000000000000000000000000000000000000000000000000000001');
       await expect(manager.getWinner(1)).to.be.revertedWithCustomError(manager, 'RaffleNotFulfilled');
     });
@@ -290,9 +365,14 @@ describe('CCIP Ticket Manager', () => {
       await snapshot.restore();
     });
 
+    it('Cannot unlock the prize as non-admin', async () => {
+      const tx = manager.connect(signers[1]).cancelRaffle(1);
+      await expect(tx).to.be.revertedWithCustomError(manager, 'MissingRole')
+    });
+
     it('Should unlock the prize', async () => {
       await (await link.mint(manager.address, ethers.utils.parseEther('100'))).wait();
-      const tx = await manager.cancelRaffle(counterpartContractAddress, 1, 1);
+      const tx = await manager.cancelRaffle(1);
       const { events } = await tx.wait();
       expect(events).to.have.lengthOf(3);
       const ccipMessageEvent = ccipRouter.interface.parseLog(events[0]);
@@ -373,6 +453,26 @@ describe('CCIP Ticket Manager', () => {
       )
     });
 
+    it('Cannot buy more than MAX tickets', async () => {
+      buyer1 = await getWalletWithEthers();
+      const currentBlock = await ethers.provider.getBlockNumber();
+      const sig = await api.signMessage(ethers.utils.arrayify(
+        ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
+          buyer1.address,
+          0,
+          1,
+          3001,
+          currentBlock + 10,
+          0
+        ])
+      ));
+      const tx = manager.connect(buyer1).buyTickets(1, 3001, currentBlock + 10, sig);
+      await expect(tx).to.be.revertedWithCustomError(
+        manager,
+        'MaxTicketExceed'
+      );
+    });
+
     it('Cannot buy zero tickets', async () => {
       buyer1 = await getWalletWithEthers();
       const currentBlock = await ethers.provider.getBlockNumber();
@@ -391,68 +491,6 @@ describe('CCIP Ticket Manager', () => {
         manager,
         'InvalidTicketCount'
       );
-    });
-
-    it('Bad ERC1155Receiver cannot purchase tickets', async () => {
-      const currentBlock = await ethers.provider.getBlockNumber();
-      const sig = await api.signMessage(ethers.utils.arrayify(
-        ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
-          badReceiver.address,
-          0,
-          1,
-          10,
-          currentBlock + 10,
-          0
-        ])
-      ));
-      const tx = whileImpersonating(badReceiver.address, ethers.provider, async (signer) =>
-        manager.connect(signer).buyTickets(1, 10, currentBlock + 10, sig)
-      );
-      await expect(tx).to.be.revertedWithCustomError(
-        tickets,
-        'TransferRejected'
-      )
-    });
-
-    it('Non ERC1155Receiver cannot purchase tickets', async () => {
-      const currentBlock = await ethers.provider.getBlockNumber();
-      const sig = await api.signMessage(ethers.utils.arrayify(
-        ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
-          ccipRouter.address,
-          0,
-          1,
-          10,
-          currentBlock + 10,
-          0
-        ])
-      ));
-      const tx = whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
-        manager.connect(signer).buyTickets(1, 10, currentBlock + 10, sig)
-      );
-      await expect(tx).to.be.revertedWithCustomError(
-        tickets,
-        'TransferRejected'
-      )
-    });
-
-    it('Good ERC1155Receiver can purchase tickets', async () => {
-      const currentBlock = await ethers.provider.getBlockNumber();
-      const sig = await api.signMessage(ethers.utils.arrayify(
-        ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
-          goodReceiver.address,
-          0,
-          1,
-          10,
-          currentBlock + 10,
-          0
-        ])
-      ));
-      const tx = await whileImpersonating(goodReceiver.address, ethers.provider, async (signer) =>
-        manager.connect(signer).buyTickets(1, 10, currentBlock + 10, sig)
-      );
-      const { events } = await tx.wait();
-      expect(events).to.have.lengthOf(3);
-      expect(await tickets.balanceOf(goodReceiver.address, 1)).to.eq(10);
     });
 
     it('Buyer 1 gets 10 free tickets', async () => {
@@ -492,7 +530,7 @@ describe('CCIP Ticket Manager', () => {
     });
 
     it('Should not be able to cancel if the raffle is still open', async () => {
-      await expect(manager.cancelRaffle(counterpartContractAddress, 1, 1))
+      await expect(manager.cancelRaffle(1))
         .to.be.revertedWithCustomError(manager, 'RaffleIsStillOpen');
     });
 
@@ -519,7 +557,7 @@ describe('CCIP Ticket Manager', () => {
     })
 
     it('Cancels and sends cancellation CCIP Message', async () => {
-      const tx = await manager.cancelRaffle(counterpartContractAddress, 1, 1);
+      const tx = await manager.cancelRaffle(1);
       const { events } = await tx.wait();
       expect(events).to.have.lengthOf(3);
       const ccipMessageEvent = ccipRouter.interface.parseLog(events[0]);
@@ -562,9 +600,62 @@ describe('CCIP Ticket Manager', () => {
         'PlayerAlreadyRefunded'
       );
     });
+
+    it('For the next non-cancelled raffle, admin can withdraw the funds', async () => {
+      const now = await blockTime();
+      const tx = await whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
+        manager.connect(signer).ccipReceive({
+          messageId: ethers.constants.HashZero,
+          sourceChainSelector: 1,
+          sender: '0x' + counterpartContractAddress.slice(-40).padStart(64, '0'),
+          data: '0x0000000000000000000000000000000000000000000000000000000000000002',
+          destTokenAmounts: []
+        })
+      );
+      await tx.wait();
+      await (await manager.createRaffle(
+        2,
+        now,
+        now + timeSeconds.hour,
+        50,
+        500,
+        10
+      )).wait();
+
+      for (let i = 0; i < 50; i++) {
+        const buyer = await getWalletWithEthers();
+        const currentBlock = await ethers.provider.getBlockNumber();
+        const sig = await api.signMessage(ethers.utils.arrayify(
+          ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
+            buyer.address,
+            0,
+            2,
+            10,
+            currentBlock + 10,
+            100
+          ])
+        ));
+        await (await manager.connect(buyer).buyTickets(2, 10, currentBlock + 10, sig, { value: 100 })).wait();
+      }
+
+      const { events } = await (await manager.drawWinner(2)).wait();
+      const requestSentEvent = events.find(e => e.event === 'RequestSent');
+      const requestId = requestSentEvent.args.requestId;
+      await (await coordinator.fulfillRandomWords(requestId, [randomWord()])).wait();
+      await (await manager.propagateRaffleWinner(2)).wait();
+      const balanceBefore = await ethers.provider.getBalance(signers[0].address);
+      const receipt = await (await manager.withdrawETH()).wait();
+      const gas = receipt.cumulativeGasUsed.mul(receipt.effectiveGasPrice);
+      const balanceAfter = await ethers.provider.getBalance(signers[0].address);
+      expect(balanceAfter).to.eq(balanceBefore.add(5000).sub(gas));
+    });
   });
 
-  describe('Successful raffle flow', () => {
+  describe('Successful raffle flow (raffle time end)', () => {
+    let start;
+    let end;
+    let requestId;
+
     before(async () => {
       snapshot = await helpers.takeSnapshot();
     });
@@ -575,14 +666,15 @@ describe('CCIP Ticket Manager', () => {
     const buyers = [];
 
     it('Should be able to create a raffle', async () => {
-      const now = await blockTime();
+      start = await blockTime();
+      end = start + timeSeconds.hour;
       const tx = await manager.createRaffle(
         1,
-        now + 60,
-        now + timeSeconds.hour,
-        0,
-        500,
-        100
+        start,
+        end,
+        200,
+        1000,
+        25
       );
       const { events } = await tx.wait();
       expect(events).to.have.lengthOf(1);
@@ -591,27 +683,8 @@ describe('CCIP Ticket Manager', () => {
       expect(id).to.eq(1);
     });
 
-    it('Should not be able to purchase tickets before the announced start', async () => {
-      const buyer = await getWalletWithEthers();
-      const currentBlock = await ethers.provider.getBlockNumber();
-      const sig = await api.signMessage(ethers.utils.arrayify(
-        ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
-          buyer.address,
-          0,
-          1,
-          100,
-          currentBlock + 10,
-          100
-        ])
-      ));
-      await expect(manager.connect(buyer).buyTickets(
-        1, 100, currentBlock + 10, sig, { value: 100 }
-      )).to.be.revertedWithCustomError(manager, 'RaffleHasNotStarted');
-    });
-
     it('Should be able to purchase tickets', async () => {
-      await helpers.time.increase(60);
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 8; i++) {
         const buyer = await getWalletWithEthers();
         const currentBlock = await ethers.provider.getBlockNumber();
         const sig = await api.signMessage(ethers.utils.arrayify(
@@ -619,7 +692,7 @@ describe('CCIP Ticket Manager', () => {
             buyer.address,
             0,
             1,
-            100,
+            25,
             currentBlock + 10,
             100
           ])
@@ -634,7 +707,7 @@ describe('CCIP Ticket Manager', () => {
             0
           ])
         ));
-        await (await manager.connect(buyer).buyTickets(1, 100, currentBlock + 10, sig, { value: 100 })).wait();
+        await (await manager.connect(buyer).buyTickets(1, 25, currentBlock + 10, sig, { value: 100 })).wait();
         buyers.push(buyer);
         await expect(manager.connect(buyer).buyTickets(1, 10, currentBlock + 10, sig2)).to.be.revertedWithCustomError(
           manager,
@@ -642,45 +715,26 @@ describe('CCIP Ticket Manager', () => {
         );
         const { totalSpent, totalPurchased, withdrawn } = await manager.getParticipation(1, buyer.address);
         expect(totalSpent).to.eq(100);
-        expect(totalPurchased).to.eq(100);
+        expect(totalPurchased).to.eq(25);
         expect(withdrawn).to.eq(false);
       }
     });
 
-    it('Should not be able to purchase more tickets', async () => {
-      const buyer = await getWalletWithEthers();
-      const currentBlock = await ethers.provider.getBlockNumber();
-      const sig = await api.signMessage(ethers.utils.arrayify(
-        ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
-          buyer.address,
-          0,
-          1,
-          10,
-          currentBlock + 10,
-          0
-        ])
-      ));
-      await expect(manager.connect(buyer).buyTickets(1, 10, currentBlock + 10, sig)).to.be.revertedWithCustomError(
-        manager,
-        'TooManyTickets'
-      )
-      buyers.push(buyer);
+    it('Should not be able to immediately draw the raffle', async () => {
+      await expect(manager.shouldDrawRaffle(1)).to.be.revertedWithCustomError(manager, 'RaffleIsStillOpen');
+      await expect(manager.drawWinner(1)).to.be.revertedWithCustomError(manager, 'RaffleIsStillOpen');
     });
 
-    it('Should not be able to cancel the raffle', async () => {
-      await helpers.time.increase(7200);
-      await expect(manager.cancelRaffle(counterpartContractAddress, 1, 1)).to.be.revertedWithCustomError(
-        manager,
-        'TargetTicketsReached'
-      );
+    it('Should not be able to draw the raffle at exact timestamp of raffle end', async () => {
+      await helpers.time.setNextBlockTimestamp(end);
+      await expect(manager.shouldDrawRaffle(1)).to.be.revertedWithCustomError(manager, 'RaffleIsStillOpen');
+      await expect(manager.drawWinner(1)).to.be.revertedWithCustomError(manager, 'RaffleIsStillOpen');
     });
 
-    it('Should not be able to fulfill randomness before requesting it', async () => {
-      const tx = whileImpersonating(coordinator.address, ethers.provider, async (signer) =>
-        manager.connect(signer).rawFulfillRandomWords(1, [randomWord()])
-      );
-      await expect(tx).to.be.revertedWithCustomError(manager, 'RequestNotFound');
-    });
+    it('Should not be able to cancel a raffle with exactly minTicketThreshold sold', async () => {
+      await helpers.time.increase(1);
+      await expect(manager.shouldCancelRaffle(1)).to.be.revertedWithCustomError(manager, 'TargetTicketsReached');
+    })
 
     it('Should be able to draw the winner', async () => {
       expect(await manager.shouldDrawRaffle(1)).to.eq(true);
@@ -723,7 +777,7 @@ describe('CCIP Ticket Manager', () => {
     });
 
     it('Cannot cancel after drawing', async () => {
-      await expect(manager.cancelRaffle(counterpartContractAddress, 1, 1)).to.be.revertedWithCustomError(
+      await expect(manager.cancelRaffle(1)).to.be.revertedWithCustomError(
         manager,
         'InvalidRaffle'
       );
@@ -731,7 +785,7 @@ describe('CCIP Ticket Manager', () => {
 
     it('Should not unlock the funds until we guarantee that the winner can claim their prize', async () => {
       const balance = await ethers.provider.getBalance(manager.address);
-      expect(balance).to.eq(500);
+      expect(balance).to.eq(800);
       await expect(manager.withdrawETH()).to.be.revertedWithCustomError(
         manager,
         'NothingToSend'
@@ -739,15 +793,61 @@ describe('CCIP Ticket Manager', () => {
     });
 
     it('Should not be able to propagate winner before randomness fulfillment', async () => {
-      await expect(manager.propagateRaffleWinner(ethers.constants.AddressZero, 1, 1)).to.be.revertedWithCustomError(
+      await expect(manager.propagateRaffleWinner(1)).to.be.revertedWithCustomError(
         manager,
         'InvalidRaffleStatus'
       );
     });
 
+    it('Admin could re-draw or cancel if VRF Request times out', async () => {
+      await (await link.mint(manager.address, ethers.utils.parseEther('100'))).wait();
+      await expect(manager.drawWinner(1)).to.be.revertedWithCustomError(manager, 'InvalidRaffle');
+      await expect(manager.cancelRaffle(1)).to.be.revertedWithCustomError(manager, 'InvalidRaffle');
+      await helpers.mine(201);
+      const drawWinnerSnapshot = await helpers.takeSnapshot();
+      await expect(manager.drawWinner(1)).to.not.be.reverted;
+      await drawWinnerSnapshot.restore();
+      const cancelRaffleSnapshot = await helpers.takeSnapshot();
+      await expect(manager.cancelRaffle(1)).to.not.be.reverted;
+      await cancelRaffleSnapshot.restore();
+    });
+
+    it('Public couldn\'t redraw if VRF Request times out', async () => {
+      const randomGuy = await getWalletWithEthers();
+      const contract = manager.connect(randomGuy);
+      await expect(contract.drawWinner(1)).to.be.revertedWithCustomError(manager, 'MissingRole');
+      await expect(contract.cancelRaffle(1)).to.be.revertedWithCustomError(manager, 'MissingRole');
+    });
+
+    it('Should be able to cancel if the raffle is not fullfilled within timeout window', async () => {
+      const intermediarySnapshot = await helpers.takeSnapshot();
+      await (await manager.cancelRaffle(1)).wait();
+      const raffle = await manager.getRaffle(1);
+      expect(raffle.status).to.eq(RaffleStatus.CANCELED);
+      await intermediarySnapshot.restore();
+    });
+
+    it('Should be able to re-draw the winner if randomness is not fulfilled within timeout window', async () => {
+      const { events } = await (await manager.drawWinner(1)).wait();
+      const requestSentEvent = events.find(e => e.event === 'RequestSent');
+      requestId = requestSentEvent.args.requestId;
+      const { fulfilled, randomWord, raffleId } = await manager.getRequestStatus(requestId);
+      await expect(manager.getWinner(1)).to.be.revertedWithCustomError(manager, 'RaffleNotFulfilled');
+      expect(fulfilled).to.eq(false);
+      expect(randomWord).to.eq(0);
+      expect(raffleId).to.eq(1);
+    })
+
     it('Fulfills randomness', async () => {
       await (await link.mint(manager.address, ethers.utils.parseEther('100'))).wait();
-      await (await coordinator.fulfillRandomWordsWithOverride(1, manager.address, [randomWord()])).wait();
+      await (await coordinator.fulfillRandomWords(requestId, [randomWord()])).wait();
+    });
+
+    it('Should not be able to fulfill the randomness request a second time', async () => {
+      const { events } = await (await coordinator.fulfillRandomWords(requestId, [randomWord()])).wait();
+      const event = manager.interface.parseLog(events[0]);
+      expect(event.name).to.eq('InvalidVRFRequest');
+      expect(event.args[0]).to.eq(requestId);
     });
 
     it('Computes ticket numbers correclty', async () => {
@@ -756,12 +856,12 @@ describe('CCIP Ticket Manager', () => {
       const { fulfilled, randomWord } = await manager.getRequestStatus(requestId);
       expect(fulfilled).to.eq(true);
       const ticketSupply = await tickets.supplyOf(1);
-      expect(ticketSupply).to.eq(500);
+      expect(ticketSupply).to.eq(200);
       const winningTicket = randomWord.mod(ticketSupply).toNumber();
       let winner;
       let count = 0;
       for (const buyer of buyers) {
-        count += 100;
+        count += 25;
         winner = buyer;
         if (count > winningTicket) break;
       }
@@ -769,22 +869,8 @@ describe('CCIP Ticket Manager', () => {
       expect(await manager.getWinner(1)).to.eq(winner.address);
     })
 
-    it('Should not be able to propagate winner to null address', async () => {
-      await expect(manager.propagateRaffleWinner(ethers.constants.AddressZero, 1, 1)).to.be.revertedWithCustomError(
-        manager,
-        'MissingCCIPParams'
-      );
-    });
-
-    it('Should not be able to propagate winner to null chain', async () => {
-      await expect(manager.propagateRaffleWinner(counterpartContractAddress, 0, 1)).to.be.revertedWithCustomError(
-        manager,
-        'MissingCCIPParams'
-      );
-    });
-
     it('Should be able to propagate when the winner is drawn', async () => {
-      const { events } = await (await manager.propagateRaffleWinner(counterpartContractAddress, 1, 1)).wait();
+      const { events } = await (await manager.propagateRaffleWinner(1)).wait();
       expect(events).to.have.lengthOf(3);
       const ccipEvent = ccipRouter.interface.parseLog(events[0]);
       expect(ccipEvent.args.chain).to.eq(1);
@@ -796,7 +882,7 @@ describe('CCIP Ticket Manager', () => {
     });
 
     it('Should not be able to propagate winner twice', async () => {
-      await expect(manager.propagateRaffleWinner(ethers.constants.AddressZero, 1, 1)).to.be.revertedWithCustomError(
+      await expect(manager.propagateRaffleWinner(1)).to.be.revertedWithCustomError(
         manager,
         'InvalidRaffleStatus'
       );
@@ -836,10 +922,11 @@ describe('CCIP Ticket Manager', () => {
     });
 
     it('Should not be able to withdraw more than balance of LINK', async () => {
-      await expect(manager.withdrawTokens(link.address, 100)).to.be.revertedWithCustomError(
-        manager,
-        'InsufficientBalance'
-      );
+      const balance = await link.balanceOf(manager.address);
+      await expect(manager.withdrawTokens(
+        link.address,
+        balance.add(10)
+      )).to.be.revertedWith('ERC20: transfer amount exceeds balance');
     });
 
     it('Should not be able to withdraw tokens as non-admin', async () => {
@@ -847,6 +934,17 @@ describe('CCIP Ticket Manager', () => {
         manager,
         'MissingRole'
       );
+    });
+
+    it('Should be able to withdraw less than balance of LINK', async () => {
+      const balance = await link.balanceOf(manager.address);
+      const amountToWithdraw = balance.div(10);
+      const startingBalance = await link.balanceOf(signers[0].address);
+      const tx = await manager.connect(signers[0]).withdrawTokens(link.address, amountToWithdraw);
+      const { events } = await tx.wait();
+      expect(events).to.have.lengthOf(1);
+      expect(await link.balanceOf(manager.address)).to.eq(balance.sub(amountToWithdraw));
+      expect(await link.balanceOf(signers[0].address)).to.eq(startingBalance.add(amountToWithdraw));
     });
 
     it('Should be able to withdraw the balance of LINK', async () => {
@@ -860,7 +958,6 @@ describe('CCIP Ticket Manager', () => {
     });
 
     it('Sends prize unlock message when receiving prize locked for an existing raffle', async () => {
-      await (await manager.setCCIPCounterpart(counterpartContractAddress, 1, true)).wait();
       await (await link.mint(manager.address, ethers.utils.parseEther('100'))).wait();
       const tx = await whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
         manager.connect(signer).ccipReceive({
@@ -877,7 +974,6 @@ describe('CCIP Ticket Manager', () => {
     })
 
     it('Early sold-out raffle', async () => {
-      await (await manager.setCCIPCounterpart(counterpartContractAddress, 1, true)).wait();
       await (await link.mint(manager.address, ethers.utils.parseEther('100'))).wait();
       const tx = await whileImpersonating(ccipRouter.address, ethers.provider, async (signer) =>
         manager.connect(signer).ccipReceive({
@@ -907,8 +1003,132 @@ describe('CCIP Ticket Manager', () => {
       await (await manager.connect(buyer).buyTickets(5, 100, currentBlock + 10, sig)).wait();
       const drawWinnerReceipt = await (await manager.drawWinner(5)).wait();
       const { requestId } = drawWinnerReceipt.events[1].args;
-      await (await coordinator.fulfillRandomWordsWithOverride(requestId, manager.address, [randomWord()])).wait();
+      await (await coordinator.fulfillRandomWords(requestId, [randomWord()])).wait();
       expect(await manager.getWinner(5)).to.eq(buyer.address);
+    });
+  });
+
+  describe('Successful raffle flow (Sold out)', () => {
+    let start;
+    let end;
+    before(async () => {
+      snapshot = await helpers.takeSnapshot();
+    });
+
+    after(async () => {
+      await snapshot.restore();
+    });
+    const buyers = [];
+
+    it('Should be able to create a raffle', async () => {
+      start = (await blockTime()) + 60;
+      end = start + timeSeconds.hour;
+      const tx = await manager.createRaffle(
+        1,
+        start,
+        end,
+        100,
+        500,
+        100
+      );
+      const {events} = await tx.wait();
+      expect(events).to.have.lengthOf(1);
+      expect(events[0].event).to.eq('NewRaffle');
+      const {id} = events[0].args;
+      expect(id).to.eq(1);
+    });
+
+    it('Should not be able to purchase tickets before the announced start', async () => {
+      const buyer = await getWalletWithEthers();
+      const currentBlock = await ethers.provider.getBlockNumber();
+      const sig = await api.signMessage(ethers.utils.arrayify(
+        ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
+          buyer.address,
+          0,
+          1,
+          100,
+          currentBlock + 10,
+          100
+        ])
+      ));
+      await expect(manager.connect(buyer).buyTickets(
+        1, 100, currentBlock + 10, sig, {value: 100}
+      )).to.be.revertedWithCustomError(manager, 'RaffleHasNotStarted');
+    });
+
+    it('purchase tickets', async () => {
+      await helpers.time.setNextBlockTimestamp(start);
+      for (let i = 0; i < 5; i++) {
+        const buyer = await getWalletWithEthers();
+        const currentBlock = await ethers.provider.getBlockNumber();
+        const sig = await api.signMessage(ethers.utils.arrayify(
+          ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
+            buyer.address,
+            0,
+            1,
+            25,
+            currentBlock + 10,
+            100
+          ])
+        ));
+        await (await manager.connect(buyer).buyTickets(1, 100, currentBlock + 10, sig, {value: 100})).wait();
+        buyers.push(buyer);
+      }
+    });
+
+    it('Should not be able to purchase more tickets', async () => {
+      const buyer = await getWalletWithEthers();
+      const currentBlock = await ethers.provider.getBlockNumber();
+      const sig = await api.signMessage(ethers.utils.arrayify(
+        ethers.utils.solidityKeccak256(['address', 'uint256', 'uint256', 'uint16', 'uint256', 'uint256'], [
+          buyer.address,
+          0,
+          1,
+          10,
+          currentBlock + 10,
+          0
+        ])
+      ));
+      await expect(manager.connect(buyer).buyTickets(1, 10, currentBlock + 10, sig)).to.be.revertedWithCustomError(
+        manager,
+        'TooManyTickets'
+      )
+      buyers.push(buyer);
+    });
+
+    it('Should not be able to cancel the raffle', async () => {
+      await helpers.time.increase(7200);
+      await expect(manager.cancelRaffle(1)).to.be.revertedWithCustomError(
+        manager,
+        'TargetTicketsReached'
+      );
+    });
+
+    it('Should not be able to fulfill randomness before requesting it', async () => {
+      const tx = await whileImpersonating(coordinator.address, ethers.provider, async (signer) =>
+        manager.connect(signer).rawFulfillRandomWords(1, [randomWord()])
+      );
+      const { events } = await tx.wait();
+      const event = manager.interface.parseLog(events[0]);
+      expect(event.name).to.eq('InvalidVRFRequest');
+      expect(event.args[0]).to.eq(1);
+    });
+
+    it('Should not be able to request randomness with less than minimum confirmation', async () => {
+      await (await coordinator.configRequestConfirmations(5)).wait();
+      await expect(manager.drawWinner(1)).to.be.reverted;
+    });
+
+    it('Should not be able to configure request confirmations as non-admin', async () => {
+      await expect(manager.connect(signers[1]).setRequestConfirmations(7)).to.be.revertedWithCustomError(manager, 'MissingRole');
+    });
+
+    it('Should be able to configure request confirmations', async () => {
+      await (await manager.setRequestConfirmations(7)).wait();
+    });
+
+    it('Draw the winner', async () => {
+      await (await manager.drawWinner(1)).wait();
     });
   });
 });

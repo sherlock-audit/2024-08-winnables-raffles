@@ -1,0 +1,10 @@
+diff a/public-contracts/contracts/BaseCCIPContract.sol b/public-contracts/contracts/BaseCCIPContract.sol	(rejected hunks)
+@@ -40,7 +40,7 @@ contract BaseCCIPContract {
+     function _packCCIPContract(address contractAddress, uint64 chainSelector) internal pure returns(bytes32) {
+         return bytes32(
+             uint256(uint160(contractAddress)) |
+-            uint256(chainSelector << 160)
++            uint256(chainSelector) << 160
+         );
+     }
+ }

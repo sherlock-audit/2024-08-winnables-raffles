@@ -1,14 +1,14 @@
-const { attachAll } = require("../utils/demo");
-const ask = require('../utils/ask');
-const { ethers } = require('hardhat');
+const { ethers, network} = require('hardhat');
+const latestDeployments = require('../deployments/latest.json');
 
 async function main() {
-  const factory = await ethers.getContractFactory('Winnables');
-  const address = await ask('Contract Address: ');
-  const contractAddress = ethers.utils.getAddress(address);
-  const winnables = factory.attach(contractAddress);
+  const contractAddress = latestDeployments.find(
+    d => d.network === network.name && d.name === 'WinnablesTicketManager'
+  ).address;
+  const factory = await ethers.getContractFactory('WinnablesTicketManager');
+  const manager = factory.attach(contractAddress);
 
-  const tx = await winnables.withdrawETH();
+  const tx = await manager.withdrawETH();
   console.log('Tx hash:', tx.hash);
 }
 

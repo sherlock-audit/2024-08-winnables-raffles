@@ -1,0 +1,46 @@
+diff a/public-contracts/contracts/interfaces/IWinnables.sol b/public-contracts/contracts/interfaces/IWinnables.sol	(rejected hunks)
+@@ -5,27 +5,24 @@ interface IWinnables {
+     error InvalidPrize();
+     error RaffleHasNotStarted();
+     error RaffleHasEnded();
+-    error NothingToWithdraw();
+     error RaffleIsStillOpen();
+     error TooManyTickets();
+     error InvalidRaffle();
+     error RaffleNotFulfilled();
+     error NoParticipants();
+     error RequestNotFound(uint256 requestId);
+-    error TokenWithdrawFailed(address token, address receiver, uint256 amount);
+     error ExpiredCoupon();
+     error PlayerAlreadyRefunded(address player);
+     error NothingToSend();
+     error Unauthorized();
+-    error NothingToRefund();
+     error TargetTicketsNotReached();
+     error TargetTicketsReached();
+     error RaffleClosingTooSoon();
+     error InsufficientBalance();
+-    error NoWinner();
+     error ETHTransferFail();
+     error RaffleRequiresTicketSupplyCap();
+     error RaffleRequiresMaxHoldings();
++    error NotAnNFT();
+ 
+     event WinnerDrawn(uint256 indexed requestId);
+     event RequestSent(uint256 indexed requestId, uint256 indexed raffleId);
+@@ -39,6 +36,7 @@ interface IWinnables {
+     struct RequestStatus {
+         uint256 raffleId;
+         uint256 randomWord;
++        uint256 blockLastRequested;
+     }
+ 
+     struct Raffle {
+@@ -50,6 +48,7 @@ interface IWinnables {
+         uint32 maxHoldings;
+         uint256 totalRaised;
+         uint256 chainlinkRequestId;
++        bytes32 ccipCounterpart;
+         mapping(address => bytes32) participations;
+     }
+ }

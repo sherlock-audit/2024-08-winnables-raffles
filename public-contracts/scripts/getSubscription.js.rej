@@ -1,0 +1,18 @@
+diff a/public-contracts/scripts/getSubscription.js b/public-contracts/scripts/getSubscription.js	(rejected hunks)
+@@ -2,9 +2,14 @@ const { ethers, network } = require("hardhat");
+ const latestDeployments = require('../deployments/latest.json');
+ 
+ async function main() {
+-  const contractAddress = latestDeployments.find(d => d.network === network.name && d.name.endsWith('Manager')).address;
++  const contract = latestDeployments.find(
++    d => d.network === network.name && d.name === 'WinnablesTicketManager'
++  ).address;
++  if (!contract) {
++    throw new Error(`No ticket contract found on this chain: ${network.name}`)
++  }
+   const TicketManager = await ethers.getContractFactory('WinnablesTicketManager');
+-  const manager = TicketManager.attach(contractAddress);
++  const manager = TicketManager.attach(contract.address);
+ 
+   const subId = await manager.SUBSCRIPTION_ID();
+ 

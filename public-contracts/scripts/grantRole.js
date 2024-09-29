@@ -1,6 +1,6 @@
-const ask = require('../utils/ask');
-const {ethers, network} = require("hardhat");
+const { ethers, network } = require("hardhat");
 const latestDeployments = require('../deployments/latest.json');
+const ask = require('../utils/ask');
 
 async function main() {
   const signers = await ethers.getSigners();

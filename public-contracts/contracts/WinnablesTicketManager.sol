@@ -3,11 +3,9 @@ pragma solidity 0.8.24;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
-import "@chainlink/contracts/src/v0.8/VRFConsumerBaseV2.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/LinkTokenInterface.sol";
+import "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
+import "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
 
 import "./Roles.sol";
 import "./interfaces/IWinnablesTicketManager.sol";
@@ -15,19 +13,26 @@ import "./interfaces/IWinnablesTicket.sol";
 import "./BaseCCIPSender.sol";
 import "./BaseCCIPReceiver.sol";
 
-contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketManager, BaseCCIPSender, BaseCCIPReceiver {
+contract WinnablesTicketManager is
+    Roles,
+    VRFConsumerBaseV2Plus,
+    IWinnablesTicketManager,
+    BaseCCIPSender,
+    BaseCCIPReceiver
+{
     using SafeERC20 for IERC20;
 
     uint256 constant internal MIN_RAFFLE_DURATION = 60;
+    uint256 constant internal MAX_TICKET_PURCHASABLE = 3_000;
+    uint256 constant internal VRF_REQUEST_TIMEOUT = 200;
 
-    address immutable internal VRF_COORDINATOR;
     address immutable private TICKETS_CONTRACT;
 
     /// @dev The key hash of the Chainlink VRF
     bytes32 private immutable KEY_HASH;
 
     /// @dev The subscription ID of the Chainlink VRF
-    uint64 public immutable SUBSCRIPTION_ID;
+    uint256 public immutable SUBSCRIPTION_ID;
 
     /// @dev Mapping from Chainlink request id to struct RequestStatus
     mapping(uint256 => RequestStatus) internal _chainlinkRequests;
@@ -37,6 +42,9 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
 
     /// @dev Nonces used in the signature that allows ticket sales to avoid signature reuse
     mapping(address => uint256) private _userNonces;
+
+    /// @dev VRF request confirmations to pass when requesting randomness
+    uint16 private _vrfRequestConfirmations = 3;
 
     /// @dev ETH locked in the contract because it might be needed for a refund
     uint256 private _lockedETH;
@@ -51,17 +59,15 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     constructor(
         address _linkToken,
         address _vrfCoordinator,
-        uint64 _subscriptionId,
+        uint256 _subscriptionId,
         bytes32 _keyHash,
         address _tickets,
         address _ccipRouter
-    ) VRFConsumerBaseV2(_vrfCoordinator) BaseCCIPContract(_ccipRouter) BaseLinkConsumer(_linkToken) {
-        VRF_COORDINATOR = _vrfCoordinator;
+    ) VRFConsumerBaseV2Plus(_vrfCoordinator) BaseCCIPContract(_ccipRouter) BaseLinkConsumer(_linkToken, _ccipRouter) {
         SUBSCRIPTION_ID = _subscriptionId;
         KEY_HASH = _keyHash;
         TICKETS_CONTRACT = _tickets;
-        _setRole(msg.sender, 0, true); // Deployer is admin by default
-        LinkTokenInterface(LINK_TOKEN).approve(_ccipRouter, type(uint256).max);
+        IWinnablesTicket(_tickets).initializeManager();
     }
 
     // =============================================================
@@ -122,6 +128,7 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @return winner Address of the winner
     function getWinner(uint256 raffleId) external view returns(address winner) {
         Raffle storage raffle = _raffles[raffleId];
+
         if (raffle.status < RaffleStatus.FULFILLED || raffle.status == RaffleStatus.CANCELED) {
             revert RaffleNotFulfilled();
         }
@@ -136,19 +143,23 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     function getRequestStatus(uint256 requestId) external view returns (
         bool fulfilled,
         uint256 randomWord,
-        uint256 raffleId
+        uint256 raffleId,
+        uint256 blockLastRequested
     ) {
         RequestStatus storage request = _chainlinkRequests[requestId];
         Raffle storage raffle = _raffles[request.raffleId];
-        if (raffle.status == RaffleStatus.NONE) revert RequestNotFound(requestId);
+        if (raffle.status == RaffleStatus.NONE) {
+            revert RequestNotFound(requestId);
+        }
         fulfilled = raffle.status == RaffleStatus.FULFILLED;
         randomWord = request.randomWord;
         raffleId = request.raffleId;
+        blockLastRequested = request.blockLastRequested;
     }
 
     /// @notice (Public) Check if a raffle should draw a winner
     /// @param raffleId Raffle ID
-    /// @return true if the winner should be drawn, false otherwise
+    /// @return true if the winner should be drawn, revert otherwise
     function shouldDrawRaffle(uint256 raffleId) external view returns(bool) {
         _checkShouldDraw(raffleId);
         return true;
@@ -156,7 +167,7 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
 
     /// @notice (Public) Check if a raffle should be canceled
     /// @param raffleId Raffle ID
-    /// @return true if the raffle should be canceled, false otherwise
+    /// @return true if the raffle should be canceled, revert otherwise
     function shouldCancelRaffle(uint256 raffleId) external view returns(bool) {
         _checkShouldCancel(raffleId);
         return true;
@@ -185,7 +196,9 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
         uint256 blockNumber,
         bytes calldata signature
     ) external payable {
-        if (ticketCount == 0) revert InvalidTicketCount();
+        if (ticketCount == 0) {
+            revert InvalidTicketCount();
+        }
         _checkTicketPurchaseable(raffleId, ticketCount);
         _checkPurchaseSig(raffleId, ticketCount, blockNumber, signature);
 
@@ -214,16 +227,27 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @param players List of players to refund
     function refundPlayers(uint256 raffleId, address[] calldata players) external {
         Raffle storage raffle = _raffles[raffleId];
-        if (raffle.status != RaffleStatus.CANCELED) revert InvalidRaffle();
+        if (raffle.status != RaffleStatus.CANCELED) {
+            revert InvalidRaffle();
+        }
+        uint256 totalRefunded = 0;
         for (uint256 i = 0; i < players.length; ) {
             address player = players[i];
             uint256 participation = uint256(raffle.participations[player]);
-            if (((participation >> 160) & 1) == 1) revert PlayerAlreadyRefunded(player);
+            if (((participation >> 160) & 1) == 1) {
+                revert PlayerAlreadyRefunded(player);
+            }
             raffle.participations[player] = bytes32(participation | (1 << 160));
             uint256 amountToSend = (participation & type(uint128).max);
             _sendETH(amountToSend, player);
             emit PlayerRefund(raffleId, player, bytes32(participation));
-            unchecked { ++i; }
+            unchecked {
+                totalRefunded += amountToSend;
+                ++i;
+            }
+        }
+        unchecked {
+            _lockedETH -= totalRefunded;
         }
     }
 
@@ -248,6 +272,7 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @param startsAt Epoch timestamp in seconds of the raffle start time
     /// @param endsAt Epoch timestamp in seconds of the raffle end time
     /// @param minTickets Minimum number of tickets required to be sold for this raffle
+    /// @param maxTickets Maximum number of tickets that can be sold for this raffle
     /// @param maxHoldings Maximum number of tickets one player can hold
     function createRaffle(
         uint256 raffleId,
@@ -258,10 +283,19 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
         uint32 maxHoldings
     ) external onlyRole(0) {
         _checkRaffleTimings(startsAt, endsAt);
-        if (maxTickets == 0) revert RaffleRequiresTicketSupplyCap();
-        if (maxHoldings == 0) revert RaffleRequiresMaxHoldings();
+        if (maxTickets == 0) {
+            revert RaffleRequiresTicketSupplyCap();
+        }
+        if (maxHoldings == 0) {
+            revert RaffleRequiresMaxHoldings();
+        }
+        if (minTickets > maxTickets) {
+            revert RaffleWontDraw();
+        }
         Raffle storage raffle = _raffles[raffleId];
-        if (raffle.status != RaffleStatus.PRIZE_LOCKED) revert PrizeNotLocked();
+        if (raffle.status != RaffleStatus.PRIZE_LOCKED) {
+            revert PrizeNotLocked();
+        }
 
         raffle.status = RaffleStatus.IDLE;
         raffle.startsAt = startsAt;
@@ -275,13 +309,17 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
 
     /// @notice (Public) Cancel a raffle if it can be canceled
     /// @param raffleId ID of the raffle to cancel
-    function cancelRaffle(address prizeManager, uint64 chainSelector, uint256 raffleId) external {
-        _checkShouldCancel(raffleId);
+    function cancelRaffle(uint256 raffleId) external {
+        Raffle storage raffle = _raffles[raffleId];
+        if (raffle.status == RaffleStatus.REQUESTED) {
+            _checkVRFTimeout(raffle);
+        } else {
+            _checkShouldCancel(raffleId);
+        }
 
-        _raffles[raffleId].status = RaffleStatus.CANCELED;
+        raffle.status = RaffleStatus.CANCELED;
         _sendCCIPMessage(
-            prizeManager,
-            chainSelector,
+            _raffles[raffleId].ccipCounterpart,
             abi.encodePacked(uint8(CCIPMessageType.RAFFLE_CANCELED), raffleId)
         );
         IWinnablesTicket(TICKETS_CONTRACT).refreshMetadata(raffleId);
@@ -290,10 +328,7 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @notice (Admin) Withdraw Link or any ERC20 tokens accidentally sent here
     /// @param tokenAddress Address of the token contract
     function withdrawTokens(address tokenAddress, uint256 amount) external onlyRole(0) {
-        IERC20 token = IERC20(tokenAddress);
-        uint256 balance = token.balanceOf(address(this));
-        if (amount < balance) revert InsufficientBalance();
-        token.safeTransfer(msg.sender, amount);
+        IERC20(tokenAddress).safeTransfer(msg.sender, amount);
     }
 
     /// @notice (Admin) Withdraw ETH from a canceled raffle or ticket sales
@@ -309,19 +344,30 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @param raffleId ID of the Raffle we wish to draw a winner for
     function drawWinner(uint256 raffleId) external {
         Raffle storage raffle = _raffles[raffleId];
-        _checkShouldDraw(raffleId);
+        if (raffle.status == RaffleStatus.REQUESTED) {
+            _checkVRFTimeout(raffle);
+        } else {
+            _checkShouldDraw(raffleId);
+        }
         raffle.status = RaffleStatus.REQUESTED;
 
-        uint256 requestId = VRFCoordinatorV2Interface(VRF_COORDINATOR).requestRandomWords(
-            KEY_HASH,
-            SUBSCRIPTION_ID,
-            3,
-            100_000,
-            1
+        uint256 requestId = s_vrfCoordinator.requestRandomWords(
+            VRFV2PlusClient.RandomWordsRequest({
+                keyHash: KEY_HASH,
+                subId: SUBSCRIPTION_ID,
+                requestConfirmations: _vrfRequestConfirmations,
+                callbackGasLimit: 100_000,
+                numWords: 1,
+                extraArgs: VRFV2PlusClient._argsToBytes(
+                    VRFV2PlusClient.ExtraArgsV1({nativePayment: false})
+                )
+            })
         );
+
         _chainlinkRequests[requestId] = RequestStatus({
             raffleId: raffleId,
-            randomWord: 0
+            randomWord: 0,
+            blockLastRequested: block.number
         });
         raffle.chainlinkRequestId = requestId;
         emit RequestSent(requestId, raffleId);
@@ -331,13 +377,17 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @notice (Public) Send a cross-chain message to the Prize Manager to
     ///         mark the prize as claimable by the winner
     /// @param raffleId ID of the Raffle we wish to draw a winner for
-    function propagateRaffleWinner(address prizeManager, uint64 chainSelector, uint256 raffleId) external {
+    function propagateRaffleWinner(uint256 raffleId) external {
         Raffle storage raffle = _raffles[raffleId];
-        if (raffle.status != RaffleStatus.FULFILLED) revert InvalidRaffleStatus();
+        if (raffle.status != RaffleStatus.FULFILLED) {
+            revert InvalidRaffleStatus();
+        }
         raffle.status = RaffleStatus.PROPAGATED;
         address winner = _getWinnerByRequestId(raffle.chainlinkRequestId);
 
-        _sendCCIPMessage(prizeManager, chainSelector, abi.encodePacked(uint8(CCIPMessageType.WINNER_DRAWN), raffleId, winner));
+        _sendCCIPMessage(
+            raffle.ccipCounterpart, abi.encodePacked(uint8(CCIPMessageType.WINNER_DRAWN), raffleId, winner)
+        );
         IWinnablesTicket(TICKETS_CONTRACT).refreshMetadata(raffleId);
         unchecked {
             _lockedETH -= raffle.totalRaised;
@@ -349,11 +399,14 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @param randomWords Array of 32 bytes integers sent back from the oracle
     function fulfillRandomWords(
         uint256 requestId,
-        uint256[] memory randomWords
+        uint256[] calldata randomWords
     ) internal override {
         RequestStatus storage request = _chainlinkRequests[requestId];
         Raffle storage raffle = _raffles[request.raffleId];
-        if (raffle.status != RaffleStatus.REQUESTED) revert RequestNotFound(requestId);
+        if (raffle.chainlinkRequestId != requestId || raffle.status != RaffleStatus.REQUESTED) {
+            emit InvalidVRFRequest(requestId);
+            return;
+        }
         request.randomWord = randomWords[0];
         raffle.status = RaffleStatus.FULFILLED;
         emit WinnerDrawn(requestId);
@@ -367,7 +420,9 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     ) internal override {
         (address _senderAddress) = abi.decode(message.sender, (address));
         bytes32 counterpart = _packCCIPContract(_senderAddress, message.sourceChainSelector);
-        if (!_ccipContracts[counterpart]) revert UnauthorizedCCIPSender();
+        if (!_ccipContracts[counterpart]) {
+            revert UnauthorizedCCIPSender();
+        }
         (uint256 raffleId) = abi.decode(message.data, (uint256));
         if (_raffles[raffleId].status != RaffleStatus.NONE) {
             // The raffle cannot be created, send back a cancel message to unlock the prize
@@ -379,6 +434,9 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
             return;
         }
         _raffles[raffleId].status = RaffleStatus.PRIZE_LOCKED;
+        _raffles[raffleId].ccipCounterpart = _packCCIPContract(
+            abi.decode(message.sender, (address)), message.sourceChainSelector
+        );
 
         emit RafflePrizeLocked(
             message.messageId,
@@ -397,8 +455,12 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @param startsAt Raffle scheduled starting time
     /// @param endsAt Raffle scheduled ending time
     function _checkRaffleTimings(uint64 startsAt, uint64 endsAt) internal view {
-        if (startsAt < block.timestamp) startsAt = uint64(block.timestamp);
-        if (startsAt + MIN_RAFFLE_DURATION > endsAt) revert RaffleClosingTooSoon();
+        if (startsAt < block.timestamp) {
+            startsAt = uint64(block.timestamp);
+        }
+        if (startsAt + MIN_RAFFLE_DURATION > endsAt) {
+            revert RaffleClosingTooSoon();
+        }
     }
 
     /// @dev Checks that all the necessary conditions are met to purchase a ticket
@@ -406,38 +468,85 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @param ticketCount Number of tickets to be sold
     function _checkTicketPurchaseable(uint256 raffleId, uint256 ticketCount) internal view {
         Raffle storage raffle = _raffles[raffleId];
-        if (raffle.startsAt > block.timestamp) revert RaffleHasNotStarted();
-        if (raffle.status != RaffleStatus.IDLE) revert RaffleHasEnded();
-        if (block.timestamp > raffle.endsAt) revert RaffleHasEnded();
+        if (ticketCount > MAX_TICKET_PURCHASABLE) {
+            revert MaxTicketExceed();
+        }
+        if (raffle.startsAt > block.timestamp) {
+            revert RaffleHasNotStarted();
+        }
+        if (raffle.status != RaffleStatus.IDLE) {
+            revert RaffleHasEnded();
+        }
+        if (block.timestamp > raffle.endsAt) {
+            revert RaffleHasEnded();
+        }
         uint256 ticketPurchased = uint256(uint32(uint256(raffle.participations[msg.sender]) >> 128));
         unchecked {
-            if (ticketPurchased + ticketCount > raffle.maxHoldings) revert TooManyTickets();
+            if (ticketPurchased + ticketCount > raffle.maxHoldings) {
+                revert TooManyTickets();
+            }
         }
         uint256 supply = IWinnablesTicket(TICKETS_CONTRACT).supplyOf(raffleId);
         unchecked {
-            if (supply + ticketCount > raffle.maxTicketSupply) revert TooManyTickets();
+            if (supply + ticketCount > raffle.maxTicketSupply) {
+                revert TooManyTickets();
+            }
         }
     }
 
     function _checkShouldDraw(uint256 raffleId) internal view {
         Raffle storage raffle = _raffles[raffleId];
-        if (raffle.status != RaffleStatus.IDLE) revert InvalidRaffle();
-        uint256 currentTicketSold = IWinnablesTicket(TICKETS_CONTRACT).supplyOf(raffleId);
-        if (currentTicketSold == 0) revert NoParticipants();
-
-        if (block.timestamp < raffle.endsAt) {
-            if (currentTicketSold < raffle.maxTicketSupply) revert RaffleIsStillOpen();
+        if (raffle.status != RaffleStatus.IDLE) {
+            revert InvalidRaffle();
         }
-        if (currentTicketSold < raffle.minTicketsThreshold) revert TargetTicketsNotReached();
+        uint256 currentTicketSold = IWinnablesTicket(TICKETS_CONTRACT).supplyOf(raffleId);
+        if (currentTicketSold == 0) {
+            revert NoParticipants();
+        }
+        if (block.timestamp <= raffle.endsAt) {
+            if (currentTicketSold < raffle.maxTicketSupply) {
+                revert RaffleIsStillOpen();
+            }
+        }
+        if (currentTicketSold < raffle.minTicketsThreshold) {
+            revert TargetTicketsNotReached();
+        }
     }
 
     function _checkShouldCancel(uint256 raffleId) internal view {
         Raffle storage raffle = _raffles[raffleId];
-        if (raffle.status == RaffleStatus.PRIZE_LOCKED) return;
-        if (raffle.status != RaffleStatus.IDLE) revert InvalidRaffle();
-        if (raffle.endsAt > block.timestamp) revert RaffleIsStillOpen();
+        if (raffle.status == RaffleStatus.PRIZE_LOCKED) {
+            _checkRole(msg.sender, 0);
+            return;
+        }
+        if (raffle.status != RaffleStatus.IDLE) {
+            revert InvalidRaffle();
+        }
+        if (block.timestamp <= raffle.endsAt) {
+            revert RaffleIsStillOpen();
+        }
         uint256 supply = IWinnablesTicket(TICKETS_CONTRACT).supplyOf(raffleId);
-        if (supply > raffle.minTicketsThreshold) revert TargetTicketsReached();
+        if (supply == 0) {
+            return;
+        }
+        if (supply >= raffle.minTicketsThreshold) {
+            revert TargetTicketsReached();
+        }
+    }
+
+    function _checkVRFTimeout(Raffle storage raffle) internal {
+        uint256 requestId = raffle.chainlinkRequestId;
+        RequestStatus storage request = _chainlinkRequests[requestId];
+        uint256 blockLastRequested = request.blockLastRequested;
+        uint256 blocksSinceLastRequest;
+        unchecked {
+            blocksSinceLastRequest = block.number - blockLastRequested;
+        }
+        if (blocksSinceLastRequest < VRF_REQUEST_TIMEOUT) {
+            revert InvalidRaffle();
+        }
+        _checkRole(msg.sender, 0);
+        delete _chainlinkRequests[requestId];
     }
 
     /// @dev Checks the validity of a signature to allow the purchase of tickets at a given price
@@ -445,8 +554,15 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @param ticketCount Number of tickets purchased
     /// @param blockNumber Number of the block when the signature expires
     /// @param signature Signature to check
-    function _checkPurchaseSig(uint256 raffleId, uint16 ticketCount, uint256 blockNumber, bytes calldata signature) internal view {
-        if (blockNumber < block.number) revert ExpiredCoupon();
+    function _checkPurchaseSig(
+        uint256 raffleId,
+        uint16 ticketCount,
+        uint256 blockNumber,
+        bytes calldata signature
+    ) internal view {
+        if (blockNumber < block.number) {
+            revert ExpiredCoupon();
+        }
         address signer = _getSigner(
             keccak256(
                 abi.encodePacked(
@@ -454,7 +570,9 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
                 )
             ), signature
         );
-        if (!_hasRole(signer, 1)) revert Unauthorized();
+        if (!_hasRole(signer, 1)) {
+            revert Unauthorized();
+        }
     }
 
     /// @dev Extracts the address of the signer from a signed message
@@ -480,8 +598,24 @@ contract WinnablesTicketManager is Roles, VRFConsumerBaseV2, IWinnablesTicketMan
     /// @param amount The amount to send
     /// @param to The recipient
     function _sendETH(uint256 amount, address to) internal {
-        if (amount == 0) revert NothingToSend();
+        if (amount == 0) {
+            revert NothingToSend();
+        }
         (bool success, ) = to.call{ value: amount }("");
-        if (!success) revert ETHTransferFail();
+        if (!success) {
+            revert ETHTransferFail();
+        }
+    }
+
+    /// @dev Setter for VRF Request Confirmations
+    /// @param newRequestConfirmations New value for VRF Request Confirmations
+    function setRequestConfirmations(uint16 newRequestConfirmations) external onlyRole(0) {
+        _vrfRequestConfirmations = newRequestConfirmations;
+    }
+
+    /// @notice (Admin) Set extraArgs for outgoing CCIP Messages
+    /// @param extraArgs new value for ccipExtraArgs
+    function setCCIPExtraArgs(bytes calldata extraArgs) external onlyRole(0) {
+        _setCCIPExtraArgs(extraArgs);
     }
 }

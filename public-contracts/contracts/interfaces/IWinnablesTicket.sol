@@ -19,10 +19,12 @@ interface IWinnablesTicket is IERC1155MetadataURI {
   event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
   event NewTicket(uint256 indexed id, uint256 indexed startId, uint256 indexed amount);
 
+  function manager() external view returns(address);
   function supplyOf(uint256 raffleId) external view returns(uint256);
   function ownerOf(uint256 raffleId, uint256 ticketNumner) external view returns(address);
   function mint(address to, uint256 raffleId, uint256 amount) external;
   function refreshMetadata(uint256 tokenId) external;
+  function initializeManager() external;
 
   function batchMint(
     address to,
